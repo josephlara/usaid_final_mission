@@ -1,6 +1,124 @@
 ---
-title: "usaid_final_mission"
+title: "USAID Final Mission"
+format: docx
+execute:
+  echo: false
+  warning: false
+  message: false
+  error: false
 ---
+
+```{r}
+
+library(tidyverse)
+library(janitor)
+library(googlesheets4)
+library(ggthemes)
+library(glamr)
+load_secrets()
+
+```
+
+```{r}
+#| title: load award titles
+
+df_award_titles <- read_csv("Documents/award_titles.csv")
+
+```
+
+```{r}
+#| title: "Load and munge terminated award data"
+
+df_terminated <- read_sheet(
+  ss = "https://docs.google.com/spreadsheets/d/1LDeXGK8wUIb97ARBvKG_m2PrN7_5ImeS0J7IjVCTvTY",
+  sheet = "Terminated Awards",
+  skip = 1) |> 
+    clean_names() |>  
+  
+  separate_wider_delim(
+    period_of_performance,
+    delim = "-",
+    names = c("period_start", "period_end"),
+    too_few = "align_start",
+    too_many = "merge") |> 
+  
+  mutate(across(c(period_start, period_end), str_trim),
+         tipo = "Terminado",
+         count = row_number(),
+         
+         office_division = case_when(office_division == "REGO - Wash and Biodiversity" ~ "REGO-W/B",
+                                     office_division == "REGO -Agriculture, Business & Policy" ~ "REGO-A/B/P",
+                                     .default = office_division
+         ),
+         
+         office = case_when(str_detect(office_division, "REGO") ~ "REGO",
+                            office_division %in% c("PMI", "PEPFAR", "MNCH", "HSS") ~ "IHO",
+                            .default = office_division
+         ),
+         
+         period_start = if_else(
+           str_detect(period_start, "^\\d{2}/\\d{4}$"),
+           str_c("01/", period_start),
+           period_start
+         ),
+         period_end = if_else(
+           str_detect(period_end, "^\\d{2}/\\d{4}$"),
+           str_c("01/", period_end),
+           period_end
+         ),
+         across(c(period_start, period_end), lubridate::dmy),
+         follow_on_termination_close_out_notice_sent_y_n_date = lubridate::ymd(follow_on_termination_close_out_notice_sent_y_n_date)
+         ) |> 
+  
+  pivot_longer(starts_with("period_"), names_to = "period_type", values_to = "period_date") |> 
+  
+  left_join(df_award_titles,
+            by = join_by(award_title)) |> 
+  
+  relocate(award_title_new, .after = award_title)
+
+df_timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
+
+```
+
+
+```{r}
+#| fig.width: 10
+#| fig.height: 8
+
+df_terminated |> 
+  filter(!is.na(period_date)) |> 
+  mutate(award_title_new = fct_reorder2(award_title_new, period_type, period_date)) |>
+  ggplot() +
+  geom_line(
+    mapping = aes(x = award_title_new, y = period_date, color = office),
+    size = 4
+  ) +
+  scale_y_date(
+    date_breaks = "1 year",
+    date_labels = "%Y"
+  ) +
+  labs(
+    title = "Terminated Award Timelines",
+    caption = glue::glue("Information Extracted On: ", {df_timestamp}),
+    color = "Office") +
+  theme_fivethirtyeight() +
+  coord_flip() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.caption = element_text(size = 8, face = "italic"),
+    axis.text.y = element_text(size = 7),
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.title = element_text(size = 12),
+  )
+
+```
+
 
 ## Quarto
 
