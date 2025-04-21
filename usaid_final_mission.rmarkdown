@@ -142,9 +142,13 @@ df_gantt <-
 
 ```
 
+
+
 ## Summary
 
 The closure of USAID/Mozambique will result in the imminent termination of `r val_unique_awards` awards. A total of `r val_unique_active_awards` awards that have not been terminated will transition to the US State Department which will take over management responsibilities as of July 1, 2025. 
+
+
 
 ```{r}
 #| title: Plot ghantt chart of awards
@@ -200,7 +204,11 @@ theme(
 
 ```
 
+
+
 ## Summary of Award Types
+
+
 
 ```{r}
 #| title: Plot award type data
@@ -290,7 +298,11 @@ combined_plot
 ```
 
 
+
+
 ## Asset Disposition
+
+
 
 ```{r}
 #| title: "Table 1: Asset Disposition (selected assets)"
@@ -428,7 +440,11 @@ df_disposition |>
 
 ```
 
+
+
 ## Annexes
+
+
 
 ```{r}
 #| title: "Table 2: Asset Disposition (all assets)"
@@ -450,3 +466,4 @@ df_disposition |>
     asset = "Asset Type") |> 
   tab_caption(caption = paste("Information Extracted On:", timestamp_df_disposition))
 ```
+
