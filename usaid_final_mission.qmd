@@ -24,7 +24,43 @@ library(gt)
 library(patchwork)
 library(gridExtra)
 library(waffle)
+library(scales)
+library(progressr)
 load_secrets()
+
+```
+
+```{r}
+#| title: defined functions
+#| echo: false
+#| message: false
+#| warning: false
+
+
+read_disposition_sheets <- function(sheet_names, ss_url) {
+  sheet_names |>
+    set_names() |>
+    map_dfr(
+      .f = function(sheet_name) {
+        df <- read_sheet(
+          ss = ss_url,
+          skip = 6,
+          sheet = sheet_name,
+          range = "A7:K"
+        ) |>
+          clean_names()
+
+        expected_cols <- c("article_item", "quantity", "transfer_sale_donate_dispose", "transferred_to_donated_to")
+        available_cols <- intersect(expected_cols, names(df))
+
+        df_selected <- df |> select(all_of(available_cols))
+
+        # Coerce all selected columns to character
+        df_selected |> mutate(across(everything(), as.character))
+      },
+      .id = "sheet_name"
+    )
+}
 
 ```
 
@@ -34,8 +70,11 @@ load_secrets()
 #| message: false
 #| warning: false
 
+# import alternative award title table
 map_award_titles <- read_csv("Documents/award_titles.csv")
 
+
+# fetch data from terminated awards sheet
 df_terminated <- read_sheet(
   ss = "https://docs.google.com/spreadsheets/d/1LDeXGK8wUIb97ARBvKG_m2PrN7_5ImeS0J7IjVCTvTY",
   sheet = "Terminated Awards",
@@ -77,10 +116,40 @@ df_terminated <- read_sheet(
             by = join_by(award_title)) |> 
   relocate(award_title_new, .after = award_title)
 
+
+# create fetching timestamp
 timestamp_df_terminated <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
 val_unique_awards <- df_terminated |> summarise(n = n_distinct(award_title)) |> pull()
 
 
+# create values for datapoints
+val_unique_awards_ca <- df_terminated |> 
+  filter(award_type == "COOPERATIVE AGREEMENT") |> 
+  summarise(n = n_distinct(award_title)) |> pull()
+val_per_unique_awards_ca <- val_unique_awards_ca / val_unique_awards
+val_per_unique_awards_ca <- percent(val_per_unique_awards_ca, accuracy = 0.1)
+
+val_unique_awards_gr <- df_terminated |> 
+  filter(award_type == "GRANT") |> 
+  summarise(n = n_distinct(award_title)) |> pull()
+val_per_unique_awards_gr <- val_unique_awards_gr / val_unique_awards
+val_per_unique_awards_gr <- percent(val_per_unique_awards_gr, accuracy = 0.1)
+
+val_unique_awards_to <- df_terminated |> 
+  filter(award_type == "TASK ORDER CONTRACT") |> 
+  summarise(n = n_distinct(award_title)) |> pull()
+val_per_unique_awards_to <- val_unique_awards_to / val_unique_awards
+val_per_unique_awards_to <- percent(val_per_unique_awards_to, accuracy = 0.1)
+
+
+df_terminated_status <- df_terminated |> 
+  mutate(value = 1) |> 
+  select(current_step_status, value) |> 
+  group_by(current_step_status) |> 
+  summarize(value = sum(value)) |> 
+  ungroup()
+
+# fetch data from active awards sheet
 df_active <- read_sheet(
   ss = "https://docs.google.com/spreadsheets/d/1LDeXGK8wUIb97ARBvKG_m2PrN7_5ImeS0J7IjVCTvTY",
   sheet = "Active Awards",
@@ -121,10 +190,11 @@ df_active <- read_sheet(
             by = join_by(award_title)) |> 
   relocate(award_title_new, .after = award_title)
 
-timestamp_df_award <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
+# create fetching timestamp
+timestamp_df_active <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
 val_unique_active_awards <- df_active |> summarise(n = n_distinct(award_title)) |> pull()
 
-
+# fetch data from disposition sheet
 df_disposition <- read_sheet(
   ss = "https://docs.google.com/spreadsheets/d/11GUdXkqPj1wNyl-VOgijDe11ye-35La9OUnZmgG6wUE",
   sheet = "Summary Non-Expendable Property",
@@ -132,19 +202,56 @@ df_disposition <- read_sheet(
   clean_names() |>
   select(name_of_activity:comments)
 
+# create fetching timestampe
 timestamp_df_disposition <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
 
-df_gantt <- 
+# curate ghantt chart dataset
+df_ghantt <- 
   bind_rows(
     df_active |> select(!c(date_stop_work_order_or_termination_order_received)),
     df_terminated |> select(!c(current_step_status, follow_on_termination_close_out_notice_sent_y_n_date, date_stop_work_order_or_termination_order_received))
   )
 
+
+# fetch data from various sheets on asset disposition recipient (cars and motorcycles only)
+url_disposition <- "https://docs.google.com/spreadsheets/d/11GUdXkqPj1wNyl-VOgijDe11ye-35La9OUnZmgG6wUE"
+
+# Get all sheet names
+sheet_names <- sheet_names(url_disposition)
+
+# Keep only those starting with "72"
+sheet_names <- sheet_names[str_starts(sheet_names, "72")]
+
+# fetch and bind
+df_recipients <- read_disposition_sheets(
+  sheet_names = sheet_names, 
+  ss_url = url_disposition) |> 
+  bind_rows()
+
+df_recipients2 <- df_recipients |> 
+  mutate(quantity = as.numeric(quantity),
+         asset_recode = case_when(
+           str_detect(article_item, "ehicl") ~ "Vehicle",
+           str_detect(article_item, "iatura") ~ "Vehicle",
+           str_detect(article_item, "oyota") ~ "Vehicle",
+           str_detect(article_item, "EHICL") ~ "Vehicle",
+           str_detect(article_item, "otobik") ~ "Motorcycle",
+           str_detect(article_item, "otorcycl") ~ "Motorcycle",
+           TRUE ~ NA)) |> 
+  filter(asset_recode %in% c("Motorcycle", "Vehicle"),
+         quantity <= 1)
+
+# df_recipients |> 
+#   distinct(article_item) |> 
+#   write_csv("Dataout/article_cleaning.csv", na = "")
+
 ```
 
-## Summary
+![](images/usaid%20logo.png){fig-align="center" width="250"}
 
-The closure of USAID/Mozambique will result in the imminent termination of `r val_unique_awards` awards. A total of `r val_unique_active_awards` awards that have not been terminated will transition to the US State Department which will take over management responsibilities as of July 1, 2025. 
+## Background
+
+Following the reorganization of U.S. foreign assistance policy under the new U.S. Presidential administration, the U.S. Agency for International Development (USAID) was formally dissolved as a standalone global development agency and its functions will be consolidated under the U.S. Department of State. In Mozambique, the closure of USAID will result in the imminent termination of `r val_unique_awards` awards. A total of `r val_unique_active_awards` awards that have not been terminated will transition to the U.S. State Department that will take over management responsibilities as of July 1, 2025. Such new directives have created an urgent need to manage and document the systematic closure of USAID programs, including the disposition of assets and final reporting requirements, ensuring compliance with U.S. Government policies and a responsible wind-down of development activities. The below graphic provides an overview of the periods of performance for both active and terminated awards according to original award agreements.
 
 ```{r}
 #| title: Plot ghantt chart of awards
@@ -154,7 +261,7 @@ The closure of USAID/Mozambique will result in the imminent termination of `r va
 #| fig.width: 10
 #| fig.height: 9.5
 
-df_gantt |> 
+df_ghantt |> 
   filter(!is.na(period_date)) |> 
   mutate(award_title_new = fct_reorder2(award_title_new, period_type, period_date)) |>
   ggplot() +
@@ -200,7 +307,9 @@ theme(
 
 ```
 
-## Summary of Award Types
+## Summary of Terminated Award Types
+
+To date, a total of `r val_unique_awards` USAID/Mozambique awards have been scheduled for termination. Of these, `r val_unique_awards_ca` (`r val_per_unique_awards_ca`) are Cooperative Agreements with Grants and Task Orders constituting the second and third most common award types (`r val_per_unique_awards_gr` and `r val_per_unique_awards_to` respectively).
 
 ```{r}
 #| title: Plot award type data
@@ -208,7 +317,7 @@ theme(
 #| message: false
 #| warning: false
 #| fig.width: 10
-#| fig.height: 4.25
+#| fig.height: 5.5
 
 df_terminated_type <- df_terminated |> 
   group_by(award_type) |> 
@@ -226,11 +335,6 @@ r <- df_terminated_type |>
   ) |> 
   tab_options(
     table.font.size = px(13)
-  ) |> 
-  grand_summary_rows(
-    columns = n,
-    fns = list(Total = ~sum(., na.rm = TRUE)),
-    fmt = ~ fmt_number(.x, decimals = 0)
   )
 
 
@@ -289,8 +393,9 @@ combined_plot
 
 ```
 
+## Summary of Asset Disposition
 
-## Asset Disposition
+USAID/Mozambique has initiated a structured process to track the disposition of assets tied to awards scheduled for closure. This effort ensures compliance with federal regulations governing asset management, promotes transparency in the handover or transfer of property, and safeguards U.S. Government interests. The tracking process involves collecting detailed information on all capital and non-capital assets procured under each affected award, identifying their location, condition, and current custodianship. This data is reviewed to determine appropriate disposition actions — including transfers to other implementing partners, donations to host country institutions, or proper disposal — in alignment with USAID policy. The resulting analysis supports both accountability and informed decision-making during the closeout of these programs.
 
 ```{r}
 #| title: "Table 1: Asset Disposition (selected assets)"
@@ -307,7 +412,8 @@ df_disposition_assets <-  df_disposition |>
             Government = sum(government, na.rm = TRUE),
             `Other Entities` = sum(other_entities, na.rm = TRUE)) |>
   ungroup() |> 
-  mutate(asset = factor(asset, levels = c("Vehicles", "Motorcycles", "Laptop", "Desktop Computer", "Cellphone"))) |> 
+  mutate(asset = factor(asset, levels = c("Vehicles", "Motorcycles", "Laptop", "Desktop Computer", "Cellphone")),
+         asset = str_to_upper(asset)) |> 
   arrange(asset)
 
 r <- df_disposition_assets |> 
@@ -325,11 +431,11 @@ r <- df_disposition_assets |>
   tab_caption(caption = paste("Information Extracted On:", timestamp_df_disposition))
 
 award_colors <- c(
-  "Vehicles"           = "#2057a7",
-  "Motorcycles"        = "#BFDDFF",
-  "Laptop"             = "#c43d4d",
-  "Desktop Computer"   = "#FF939A",
-  "Cellphone"         = "#8980cb"
+  "VEHICLES"           = "#2057a7",
+  "MOTORCYCLES"        = "#BFDDFF",
+  "LAPTOP"             = "#c43d4d",
+  "DESKTOP COMPUTER"   = "#FF939A",
+  "CELLPHONE"         = "#8980cb"
 )
 
 l <- df_disposition_assets |> 
@@ -425,6 +531,131 @@ df_disposition |>
   ) +
   facet_wrap(~ factor(asset, levels=c('Vehicles', 'Motorcycles', 'Laptop', 'Computer', 'Desktop Computer', 'Cellphone')), nrow = 1)
 
+
+```
+
+```{r}
+#| title: "Table 3: Motorcycle Disposition by Recipient"
+#| echo: false
+#| message: false
+#| fig.width: 10
+#| fig.height: 10
+
+df_recipients2 |> 
+  filter(asset_recode == "Motorcycle") |> 
+  group_by(asset_recode, transferred_to_donated_to) |> 
+  summarize(quantity = sum(quantity)) |> 
+  ggplot(aes(x = fct_reorder(transferred_to_donated_to, quantity), y = quantity)) +
+  geom_col(fill = "#2057a7") +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  labs(
+    title = "Disposition of Motorcycles by Recipient",
+    subtitle = "Number of motorcycles donated or transferred from terminated project by recipient")
+  
+
+```
+
+```{r}
+#| title: "Table 3: Vehicle Disposition by Recipient"
+#| echo: false
+#| message: false
+#| fig.width: 10
+#| fig.height: 10
+
+df_recipients2 |> 
+  filter(asset_recode == "Vehicle") |> 
+  group_by(asset_recode, transferred_to_donated_to) |> 
+  summarize(quantity = sum(quantity)) |> 
+  ggplot(aes(x = fct_reorder(transferred_to_donated_to, quantity), y = quantity)) +
+  geom_col(fill = "#c43d4d") +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  labs(
+    title = "Disposition of Vehicles by Recipient",
+    subtitle = "Number of vehicles donated or transferred from terminated project by recipient")
+  
+
+```
+
+## Summary of Active Awards
+
+```{r}
+#| title: Active award ceilings
+#| echo: false
+#| message: false
+#| fig.width: 10
+#| fig.height: 6
+
+df_active |>
+  filter(!is.na(award_tec_a)) |>
+  distinct(award_title, .keep_all = TRUE) |>
+  ggplot(aes(x = fct_reorder(award_title, award_tec_a), y = award_tec_a, fill = award_title)) +
+  geom_col() +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  labs(
+    title = "Active Award TEC Ceilings",
+    subtitle = "TEC ceilings for USAID/Mozambique active awards according to original award agreements",
+    caption = glue::glue("Information Extracted On: ", {timestamp_df_active})
+  ) +
+  scale_y_continuous(
+    limits = c(0, 300000000),
+    breaks = seq(0, 300000000, by = 50000000),
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M")
+  ) +
+  theme(
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 9, margin = margin(b = 0)),
+    plot.caption = element_text(size = 8, face = "italic"),
+    legend.position = "none",
+    axis.text.y = element_text(size = 10),
+    panel.grid.major.y = element_blank(),
+  )
+
+  
+```
+
+## Project Close Out Status
+
+```{r}
+#| title: Graphic on Terminated Project Status
+#| echo: false
+#| message: false
+#| fig.width: 10
+#| fig.height: 6
+
+df_terminated_status |> 
+  filter(!is.na(current_step_status)) |> 
+  mutate(
+    status = factor(current_step_status, levels = as.character(1:16))
+  ) |> 
+  complete(status, fill = list(value = 0)) |> 
+  mutate(
+    pct = value / sum(value),
+    label = paste0(value, "\n(", percent(pct, accuracy = 0.1), ")")
+  ) |>
+  ggplot(aes(x = status, y = value, fill = as.numeric(status))) +
+  geom_col() +
+  geom_text(
+    aes(label = label),
+    vjust = -0.5,
+    size = 3.5
+  ) +
+  scale_fill_gradient(
+    low = "red",
+    high = "green",
+    guide = "none"
+  ) +
+  labs(
+    title = "Current Status of Terminated Awards",
+    x = "Termination Step",
+    y = "Number of awards in status bucket"
+  ) +
+  theme_minimal()
 
 ```
 
